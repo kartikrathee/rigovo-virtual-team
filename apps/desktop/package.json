@@ -1,0 +1,76 @@
+{
+  "name": "rigovo-virtual-team",
+  "version": "1.0.0-beta.1",
+  "description": "Rigovo Teams desktop app for orchestrated multi-agent software delivery.",
+  "homepage": "https://github.com/rigovo/rigovo-virtual-team",
+  "author": {
+    "name": "Rigovo",
+    "email": "team@rigovo.ai"
+  },
+  "private": true,
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "dependencies": {
+    "@electron-toolkit/utils": "^3.0.0",
+    "@monaco-editor/react": "^4.7.0",
+    "@xyflow/react": "^12.10.1",
+    "monaco-editor": "^0.55.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "rehype-raw": "^7.0.0",
+    "rehype-sanitize": "^6.0.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.20",
+    "electron": "44.7.2",
+    "electron-builder": "^25.0.0",
+    "electron-vite": "^2.3.0",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.14",
+    "typescript": "^5.6.2"
+  },
+  "build": {
+    "appId": "com.rigovo.desktop",
+    "productName": "Rigovo Virtual Team",
+    "directories": {
+      "output": "release"
+    },
+    "icon": "resources/icon.png",
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "resources/icon.icns",
+      "category": "public.app-category.developer-tools"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "resources/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "resources/icon.png",
+      "maintainer": "Rigovo <team@rigovo.ai>",
+      "category": "Development"
+    }
+  }
+}
