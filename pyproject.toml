@@ -1,0 +1,154 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rigovo"
+version = "1.1.0"
+description = "Virtual Engineering Team as a Service — AI-powered multi-agent CLI for software development"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+
+authors = [
+    { name = "Rigovo", email = "engineering@rigovo.com" },
+]
+maintainers = [
+    { name = "Rigovo", email = "engineering@rigovo.com" },
+]
+
+keywords = [
+    "ai",
+    "agents",
+    "multi-agent",
+    "software-engineering",
+    "code-review",
+    "llm",
+    "devtools",
+    "cli",
+    "automation",
+]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
+
+dependencies = [
+    # Orchestration
+    "langgraph>=0.3,<1.0",
+    "langchain-core>=0.3,<1.0",
+    "langchain-anthropic>=0.3,<1.0",
+    "langchain-openai>=0.3,<1.0",
+    # CLI & Terminal UI
+    "typer>=0.15,<1.0",
+    "click>=8.1,<8.3",
+    "rich>=13.0,<14.0",
+    "textual>=1.0,<2.0",
+    # Database
+    "aiosqlite>=0.20,<1.0",
+    # Cloud sync
+    "httpx>=0.28,<1.0",
+    # Control-plane API
+    "fastapi>=0.115,<1.0",
+    "uvicorn>=0.32,<1.0",
+    # Authentication (Phase 12)
+    "workos>=1.0,<2.0",
+    "PyJWT>=2.8,<3.0",
+    # Config
+    "pydantic>=2.0,<3.0",
+    "pydantic-settings>=2.0,<3.0",
+    "pyyaml>=6.0,<7.0",
+    "python-dotenv>=1.0,<2.0",
+    "langgraph-checkpoint-sqlite>=3.0,<4.0",
+    "cryptography>=42,<47",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "ruff>=0.9",
+    "mypy>=1.14",
+]
+postgres = [
+    "psycopg[binary]>=3.2,<4.0",
+]
+embeddings = [
+    "sentence-transformers>=3.0,<4.0",
+]
+groq = [
+    "langchain-groq>=0.2,<1.0",
+]
+[project.urls]
+Homepage = "https://rigovo.com"
+Documentation = "https://docs.rigovo.com"
+Repository = "https://github.com/rigovo/rigovo-virtual-team"
+Changelog = "https://github.com/rigovo/rigovo-virtual-team/blob/main/CHANGELOG.md"
+"Bug Tracker" = "https://github.com/rigovo/rigovo-virtual-team/issues"
+
+[project.scripts]
+rigovo = "rigovo.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rigovo"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/rigovo/**/*.py",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+# ── Semantic Release ──────────────────────────────────────────────
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+branch = "main"
+commit_message = "chore(release): v{version} [skip ci]"
+build_command = "python -m build"
+upload_to_pypi = false
+tag_format = "v{version}"
+
+[tool.semantic_release.changelog]
+changelog_file = "CHANGELOG.md"
+exclude_commit_patterns = ["^chore", "^ci", "^docs", "^style", "^refactor"]
+
+[tool.semantic_release.branches.main]
+match = "main"
+prerelease = false
+
+[tool.semantic_release.commit_parser_options]
+allowed_tags = ["feat", "fix", "perf", "refactor", "build", "chore", "ci", "docs", "style", "test"]
+minor_tags = ["feat"]
+patch_tags = ["fix", "perf"]
