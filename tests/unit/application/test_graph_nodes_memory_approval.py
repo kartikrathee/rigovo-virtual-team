@@ -1,0 +1,423 @@
+"""Unit tests for store memory and approval graph nodes."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import unittest
+from unittest.mock import AsyncMock, MagicMock
+from typing import Any
+from uuid import uuid4
+
+from rigovo.application.graph.nodes.store_memory import store_memory_node
+from rigovo.application.graph.nodes.approval import plan_approval_node, commit_approval_node
+from rigovo.application.graph.state import TaskState
+from rigovo.domain.entities.memory import MemoryType
+from rigovo.domain.interfaces.llm_provider import LLMResponse, LLMUsage
+
+
+class MockLLMProvider:
+    """Mock LLM provider for testing."""
+
+    def __init__(self, response_content: str = ""):
+        self.response_content = response_content
+        self.model_name = "test-model"
+
+    async def invoke(
+        self,
+        messages: list[dict[str, str]],
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.0,
+        max_tokens: int = 4096,
+    ) -> LLMResponse:
+        """Return a mock response with token counts."""
+        await asyncio.sleep(0)  # Yield to event loop as real LLM providers do
+        return LLMResponse(
+            content=self.response_content,
+            usage=LLMUsage(input_tokens=100, output_tokens=50),
+            model=self.model_name,
+        )
+
+    async def stream(self, *args, **kwargs):
+        """Mock stream method."""
+        return []
+
+
+class TestStoreMemoryNode(unittest.IsolatedAsyncioTestCase):
+    """Test the store_memory_node function."""
+
+    async def test_store_memory_node_extracts_memories(self):
+        """Test store_memory_node extracts and stores memories."""
+        state: TaskState = {
+            "task_id": "task-1",
+            "description": "Implemented OAuth flow",
+            "agent_outputs": {
+                "backend": {
+                    "summary": "Added JWT token validation and refresh logic",
+                },
+                "frontend": {"summary": "Integrated login UI with OAuth provider"},
+            },
+            "events": [],
+        }
+
+        memories = [
+            {
+                "content": "OAuth token refresh should be done before expiry",
+                "type": "pattern",
+            },
+            {
+                "content": "JWT decode requires proper error handling for expired tokens",
+                "type": "error_fix",
+            },
+        ]
+
+        mock_llm = MockLLMProvider(response_content=json.dumps(memories))
+
+        result = await store_memory_node(state, mock_llm)
+
+        assert result["status"] == "memories_extracted"
+        assert len(result["memories_to_store"]) == 2
+        assert (
+            "OAuth token refresh should be done before expiry"
+            in result["memories_to_store"]
+        )
+        assert len(result["events"]) == 1
+        assert result["events"][0]["type"] == "memories_stored"
+        assert result["events"][0]["count"] == 2
+
+    async def test_store_memory_node_handles_empty_memories(self):
+        """Test store_memory_node handles empty memory list."""
+        state: TaskState = {
+            "task_id": "task-1",
+            "description": "Simple task",
+            "agent_outputs": {"agent": {"summary": "Did something simple"}},
+            "events": [],
+        }
+
+        mock_llm = MockLLMProvider(response_content="[]")
+
+        result = await store_memory_node(state, mock_llm)
+
+        assert result["memories_to_store"] == []
+        assert result["events"][0]["count"] == 0
+
+    async def test_store_memory_node_handles_invalid_json(self):
+        """Test store_memory_node defaults to empty list on invalid JSON."""
+        state: TaskState = {
+            "task_id": "task-1",
+            "description": "Task",
+            "agent_outputs": {"agent": {"summary": "Output"}},
+            "events": [],
+        }
+
+        mock_llm = MockLLMProvider(response_content="Not JSON")
+
+        result = await store_memory_node(state, mock_llm)
+
+        assert result["memories_to_store"] == []
+        assert result["status"] == "memories_extracted"
+
+    async def test_store_memory_node_truncates_long_outputs(self):
+        """Test store_memory_node truncates long agent outputs."""
+        long_summary = "A" * 2000  # Over 1000 chars
+
+        state: TaskState = {
+            "task_id": "task-1",
+            "description": "Task",
+            "agent_outputs": {"agent": {"summary": long_summary}},
+            "events": [],
+        }
+
+        mock_llm = MockLLMProvider(response_content="[]")
+
+        result = await store_memory_node(state, mock_llm)
+
+        # Verify that memories were extracted (the LLM should have received truncated input)
+        assert result["status"] == "memories_extracted"
+
+    async def test_store_memory_node_filters_empty_memories(self):
+        """Test store_memory_node filters out memories without content."""
+        memories = [
+            {"content": "Valid memory", "type": "pattern"},
+            {"content": "", "type": "pattern"},
+            {"type": "error_fix"},  # No content field
+        ]
+
+        state: TaskState = {
+            "task_id": "task-1",
+            "description": "Task",
+            "agent_outputs": {"agent": {"summary": "Output"}},
+            "events": [],
+        }
+
+        mock_llm = MockLLMProvider(response_content=json.dumps(memories))
+
+        result = await store_memory_node(state, mock_llm)
+
+        assert len(result["memories_to_store"]) == 1
+        assert result["memories_to_store"][0] == "Valid memory"
+
+    async def test_store_memory_node_persists_with_embeddings(self):
+        """Extracted memories are persisted with type + embedding when deps are provided."""
+        memories = [
+            {"content": "Prefer idempotent retries for flaky APIs", "type": "pattern"},
+            {"content": "Use exponential backoff for 429", "type": "error_fix"},
+        ]
+        state: TaskState = {
+            "task_id": "8f4bc65d-1ecf-4f1f-98ce-7d421f46b4ea",
+            "workspace_id": "4e84545a-07ad-4ccc-aa1e-1e45ee724bda",
+            "description": "Stabilize retry policy",
+            "agent_outputs": {"sre": {"summary": "Added retry policy to clients"}},
+            "events": [],
+        }
+        mock_llm = MockLLMProvider(response_content=json.dumps(memories))
+        memory_repo = AsyncMock()
+        memory_repo.list_by_workspace.return_value = []
+        embedding_provider = AsyncMock()
+        embedding_provider.embed_batch.return_value = [[0.1, 0.2], [0.3, 0.4]]
+
+        result = await store_memory_node(
+            state,
+            mock_llm,
+            memory_repo=memory_repo,
+            embedding_provider=embedding_provider,
+        )
+
+        assert result["events"][0]["persisted_count"] == 2
+        assert memory_repo.save.await_count == 2
+        first_saved = memory_repo.save.await_args_list[0].args[0]
+        second_saved = memory_repo.save.await_args_list[1].args[0]
+        assert first_saved.memory_type == MemoryType.PATTERN
+        assert second_saved.memory_type == MemoryType.ERROR_FIX
+
+    async def test_store_memory_node_deduplicates_existing_memories(self):
+        memories = [
+            {"content": "Use retries with backoff", "type": "pattern"},
+            {"content": "New convention for auth logging", "type": "convention"},
+        ]
+        state: TaskState = {
+            "task_id": "8f4bc65d-1ecf-4f1f-98ce-7d421f46b4ea",
+            "workspace_id": "4e84545a-07ad-4ccc-aa1e-1e45ee724bda",
+            "project_root": "/tmp/project-a",
+            "description": "Stabilize retry policy",
+            "agent_outputs": {"sre": {"summary": "Added retry policy to clients"}},
+            "events": [],
+        }
+        mock_llm = MockLLMProvider(response_content=json.dumps(memories))
+        existing_memory = MagicMock()
+        existing_memory.content = "use retries with backoff"
+        memory_repo = AsyncMock()
+        memory_repo.list_by_workspace.return_value = [existing_memory]
+        embedding_provider = AsyncMock()
+        embedding_provider.embed_batch.return_value = [[0.1, 0.2]]
+
+        result = await store_memory_node(
+            state,
+            mock_llm,
+            memory_repo=memory_repo,
+            embedding_provider=embedding_provider,
+        )
+
+        assert result["events"][0]["dedup_skipped"] == 1
+        assert result["events"][0]["persisted_count"] == 1
+        assert len(result["memories_to_store"]) == 1
+
+    async def test_store_memory_node_reinforces_retrieved_memories_on_pass(self):
+        memory_id = uuid4()
+        workspace_id = uuid4()
+        source_project_id = uuid4()
+        state: TaskState = {
+            "task_id": str(uuid4()),
+            "workspace_id": str(workspace_id),
+            "project_root": str(source_project_id),
+            "description": "Task",
+            "agent_outputs": {"coder": {"summary": "Done"}},
+            "memory_retrieval_log": {
+                "coder": [{"memory_id": str(memory_id), "score": 0.9}],
+            },
+            "gate_history": [{"role": "coder", "passed": True}],
+            "events": [],
+        }
+        mock_llm = MockLLMProvider(response_content="[]")
+        existing = MagicMock()
+        existing.id = memory_id
+        existing.content = "use retries with backoff"
+        existing.record_usage = MagicMock()
+        memory_repo = AsyncMock()
+        memory_repo.list_by_workspace.return_value = [existing]
+
+        result = await store_memory_node(
+            state,
+            mock_llm,
+            memory_repo=memory_repo,
+            embedding_provider=None,
+        )
+
+        feedback_event = next(e for e in result["events"] if e.get("type") == "memory_feedback_recorded")
+        assert feedback_event["retrieved_memory_count"] == 1
+        assert feedback_event["reinforced_memory_count"] == 1
+        assert result["memory_learning_metrics"]["retrieval_success_rate"] == 1.0
+        existing.record_usage.assert_called_once()
+        # One save for reinforced retrieval; no extracted memories in this test.
+        assert memory_repo.save.await_count == 1
+
+    async def test_store_memory_node_skips_reinforcement_on_failed_gates(self):
+        memory_id = uuid4()
+        workspace_id = uuid4()
+        state: TaskState = {
+            "task_id": str(uuid4()),
+            "workspace_id": str(workspace_id),
+            "description": "Task",
+            "agent_outputs": {"coder": {"summary": "Done"}},
+            "memory_retrieval_log": {
+                "coder": [{"memory_id": str(memory_id), "score": 0.6}],
+            },
+            "gate_history": [{"role": "coder", "passed": False}],
+            "events": [],
+        }
+        mock_llm = MockLLMProvider(response_content="[]")
+        existing = MagicMock()
+        existing.id = memory_id
+        existing.content = "memory"
+        existing.record_usage = MagicMock()
+        memory_repo = AsyncMock()
+        memory_repo.list_by_workspace.return_value = [existing]
+
+        result = await store_memory_node(
+            state,
+            mock_llm,
+            memory_repo=memory_repo,
+            embedding_provider=None,
+        )
+
+        feedback_event = next(e for e in result["events"] if e.get("type") == "memory_feedback_recorded")
+        assert feedback_event["retrieved_memory_count"] == 1
+        assert feedback_event["reinforced_memory_count"] == 0
+        assert result["memory_learning_metrics"]["reinforcement_applied"] is False
+        existing.record_usage.assert_not_called()
+        memory_repo.save.assert_not_awaited()
+
+
+class TestPlanApprovalNode(unittest.IsolatedAsyncioTestCase):
+    """Test the plan_approval_node function."""
+
+    async def test_plan_approval_node_creates_summary(self):
+        """Test plan_approval_node creates approval summary."""
+        state: TaskState = {
+            "task_id": "task-1",
+            "classification": {
+                "task_type": "feature",
+                "complexity": "high",
+            },
+            "team_config": {
+                "team_name": "Platform Team",
+                "pipeline_order": ["architect", "backend", "frontend"],
+                "agents": {
+                    "architect": {"name": "Architect"},
+                    "backend": {"name": "Backend"},
+                    "frontend": {"name": "Frontend"},
+                },
+            },
+            "events": [],
+        }
+
+        result = await plan_approval_node(state)
+
+        assert result["status"] == "awaiting_plan_approval"
+        assert result["approval_status"] == "pending"
+        assert len(result["events"]) == 1
+
+        event = result["events"][0]
+        assert event["type"] == "approval_requested"
+        assert event["checkpoint"] == "plan_ready"
+
+        summary = event["summary"]
+        assert summary["task_type"] == "feature"
+        assert summary["complexity"] == "high"
+        assert summary["team"] == "Platform Team"
+        assert summary["pipeline"] == ["architect", "backend", "frontend"]
+        assert summary["agent_count"] == 3
+
+    async def test_plan_approval_node_no_team_config(self):
+        """Test plan_approval_node handles missing team config."""
+        state: TaskState = {
+            "task_id": "task-1",
+            "classification": {"task_type": "bug", "complexity": "low"},
+            "events": [],
+        }
+
+        result = await plan_approval_node(state)
+
+        assert result["status"] == "awaiting_plan_approval"
+        assert result["approval_status"] == "pending"
+
+
+class TestCommitApprovalNode(unittest.IsolatedAsyncioTestCase):
+    """Test the commit_approval_node function."""
+
+    async def test_commit_approval_node_creates_summary(self):
+        """Test commit_approval_node creates approval summary."""
+        state: TaskState = {
+            "task_id": "task-1",
+            "agent_outputs": {
+                "backend": {
+                    "cost": 0.05,
+                    "files_changed": ["src/auth.py", "src/config.py"],
+                },
+                "frontend": {
+                    "cost": 0.03,
+                    "files_changed": ["src/Login.tsx"],
+                },
+            },
+            "gate_results": {"passed": True},
+            "events": [],
+        }
+
+        result = await commit_approval_node(state)
+
+        assert result["status"] == "awaiting_commit_approval"
+        assert result["approval_status"] == "pending"
+        assert len(result["events"]) == 1
+
+        event = result["events"][0]
+        assert event["type"] == "approval_requested"
+        assert event["checkpoint"] == "commit_ready"
+
+        summary = event["summary"]
+        assert set(summary["agents_completed"]) == {"backend", "frontend"}
+        assert summary["gate_passed"] is True
+        assert summary["total_cost"] == 0.08
+        assert len(summary["files_changed"]) == 3
+
+    async def test_commit_approval_node_gate_failed(self):
+        """Test commit_approval_node shows gate failure."""
+        state: TaskState = {
+            "task_id": "task-1",
+            "agent_outputs": {"agent": {"cost": 0.01, "files_changed": []}},
+            "gate_results": {"passed": False},
+            "events": [],
+        }
+
+        result = await commit_approval_node(state)
+
+        event = result["events"][0]
+        summary = event["summary"]
+        assert summary["gate_passed"] is False
+
+    async def test_commit_approval_node_no_outputs(self):
+        """Test commit_approval_node handles no agent outputs."""
+        state: TaskState = {
+            "task_id": "task-1",
+            "events": [],
+        }
+
+        result = await commit_approval_node(state)
+
+        assert result["status"] == "awaiting_commit_approval"
+        event = result["events"][0]
+        assert event["summary"]["agents_completed"] == []
+        assert event["summary"]["total_cost"] == 0
+
+
+if __name__ == "__main__":
+    unittest.main()
